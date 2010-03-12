@@ -80,6 +80,12 @@ class InArrayProxyTest < Test::Unit::TestCase
       should "save doc" do
         @list.should_not be_new
       end
+
+      should "reset cache" do
+        @user.lists.size.should == 1
+        @user.lists.create(:name => 'Moo!')
+        @user.lists.size.should == 2
+      end
     end
 
     context "create!" do
@@ -109,6 +115,12 @@ class InArrayProxyTest < Test::Unit::TestCase
         assert_raises(MongoMapper::DocumentNotValid) do
           @user.lists.create!
         end
+      end
+
+      should "reset cache" do
+        @user.lists.size.should == 1
+        @user.lists.create!(:name => 'Moo!')
+        @user.lists.size.should == 2
       end
     end
 
@@ -160,6 +172,10 @@ class InArrayProxyTest < Test::Unit::TestCase
       context "with one id" do
         should "work for id in association" do
           @user.lists.find(@list1.id).should == @list1
+        end
+
+        should "work with string ids" do
+          @user.lists.find(@list1.id.to_s).should == @list1
         end
 
         should "not work for id not in association" do

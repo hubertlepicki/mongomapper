@@ -1,34 +1,40 @@
 require 'test_helper'
 
 class IdentityMapTest < Test::Unit::TestCase
-  def assert_in_map(resource)
-    resource.identity_map.keys.should include(resource.identity_map_key)
-    mapped_resource = resource.identity_map[resource.identity_map_key]
-    resource.object_id.should == mapped_resource.object_id
+  def assert_in_map(*resources)
+    [resources].flatten.each do |resource|
+      resource.identity_map.keys.should include(resource._id)
+      mapped_resource = resource.identity_map[resource._id]
+      resource.should equal(mapped_resource)
+    end
   end
-  
-  def assert_not_in_map(resource)
-    resource.identity_map.keys.should_not include(resource.identity_map_key)
+
+  def assert_not_in_map(*resources)
+    [resources].flatten.each do |resource|
+      resource.identity_map.keys.should_not include(resource._id)
+    end
   end
-  
+
   def expect_no_queries
     Mongo::Collection.any_instance.expects(:find_one).never
     Mongo::Collection.any_instance.expects(:find).never
   end
-  
+
   def expects_one_query
     Mongo::Collection.any_instance.expects(:find_one).once.returns({})
   end
-  
+
   context "Document" do
     setup do
+      MongoMapper::Plugins::IdentityMap.models.clear
+
       @person_class = Doc('Person') do
         set_collection_name 'people'
         plugin MongoMapper::Plugins::IdentityMap
         
         key :name, String
       end
-      
+
       @post_class = Doc('Post') do
         set_collection_name 'posts'
         plugin MongoMapper::Plugins::IdentityMap
@@ -36,35 +42,62 @@ class IdentityMapTest < Test::Unit::TestCase
         key :title, String
         key :person_id, ObjectId
       end
-      
+
       @post_class.belongs_to :person, :class => @person_class
       @person_class.many :posts, :class => @post_class
-      
-      @person_class.identity_map.clear
-      @post_class.identity_map.clear
+
+      @post_class.identity_map_on
+      @person_class.identity_map_on
+      MongoMapper::Plugins::IdentityMap.clear
+    end
+
+    should "track identity mapped models" do
+      MongoMapper::Plugins::IdentityMap.models.should == [@person_class, @post_class].to_set
+    end
+
+    should "be able to clear the map of all models" do
+      person = @person_class.create(:name => 'John')
+      post = @post_class.create(:title => 'IM 4eva')
+      assert_in_map(person, post)
+
+      MongoMapper::Plugins::IdentityMap.clear
+
+      assert_not_in_map(person, post)
+
+      [@person_class, @post_class].each { |klass| klass.identity_map.should == {} }
+    end
+    
+    context "IM on off status" do
+      teardown do
+        @post_class.identity_map_on
+        @person_class.identity_map_on
+      end
+
+      should "default identity map status to on" do
+        Doc { plugin MongoMapper::Plugins::IdentityMap }.identity_map_status.should be_true
+      end
+
+      should "be true if on" do
+        @post_class.identity_map_on
+        @post_class.should be_identity_map_on
+        @post_class.should_not be_identity_map_off
+      end
+
+      should "be false if off" do
+        @post_class.identity_map_off
+        @post_class.should be_identity_map_off
+        @post_class.should_not be_identity_map_on
+      end
+
+      should "not share with other classes" do
+        @post_class.identity_map_off
+        @person_class.identity_map_on
+        @post_class.identity_map_status.should_not == @person_class.identity_map_status
+      end
     end
 
     should "default identity map to hash" do
-      Doc() do
-        plugin MongoMapper::Plugins::IdentityMap
-      end.identity_map.should == {}
-    end
-
-    should "share identity map with other classes" do
-      map = @post_class.identity_map
-      map.object_id.should == @person_class.identity_map.object_id
-    end
-
-    should "have identity map key that is always unique per document and class" do
-      person = @person_class.new
-      person.identity_map_key.should == "people:#{person.id}"
-      @person_class.identity_map_key(person.id).should == person.identity_map_key
-
-      post = @post_class.new
-      post.identity_map_key.should == "posts:#{post.id}"
-      @post_class.identity_map_key(post.id).should == post.identity_map_key
-
-      person.identity_map_key.should_not == post.identity_map_key
+      Doc { plugin MongoMapper::Plugins::IdentityMap }.identity_map.should == {}
     end
 
     should "add key to map when saved" do
@@ -73,7 +106,7 @@ class IdentityMapTest < Test::Unit::TestCase
       person.save.should be_true
       assert_in_map(person)
     end
-    
+
     should "allow saving with options" do
       person = @person_class.new
       assert_nothing_raised do
@@ -87,7 +120,7 @@ class IdentityMapTest < Test::Unit::TestCase
       person.destroy
       assert_not_in_map(person)
     end
-    
+
     context "reload" do
       setup do
         @person = @person_class.create(:name => 'Fred')
@@ -101,8 +134,8 @@ class IdentityMapTest < Test::Unit::TestCase
       
       should "add object back into map" do
         assert_in_map(@person)
-        object_id = @person.object_id
-        @person.reload.object_id.should == object_id
+        before_reload = @person
+        @person.reload.should equal(before_reload)
         assert_in_map(@person)
       end
     end
@@ -121,10 +154,10 @@ class IdentityMapTest < Test::Unit::TestCase
         first_load = @person_class.load({'_id' => @id, 'name' => 'Frank'})
         @person_class.identity_map.expects(:[]=).never
         second_load = @person_class.load({'_id' => @id, 'name' => 'Frank'})
-        first_load.object_id.should == second_load.object_id
+        first_load.should equal(second_load)
       end
     end
-    
+
     context "#find (with one id)" do
       context "for object not in map" do
         setup do
@@ -142,7 +175,7 @@ class IdentityMapTest < Test::Unit::TestCase
           found_person = @person_class.find(@person.id)
           assert_in_map(found_person)
         end
-        
+
         should "return nil if not found " do
           @person_class.find(1234).should be_nil
         end
@@ -157,15 +190,15 @@ class IdentityMapTest < Test::Unit::TestCase
           expect_no_queries
           @person_class.find(@person.id)
         end
-        
+
         should "return exact object" do
           assert_in_map(@person)
           found_person = @person_class.find(@person.id)
-          found_person.object_id.should == @person.object_id
+          found_person.should equal(@person)
         end
       end
     end
-    
+
     context "#find (with one id and options)" do
       setup do
         @person = @person_class.create(:name => 'Fred')
@@ -195,7 +228,7 @@ class IdentityMapTest < Test::Unit::TestCase
         @person.posts.find(1234).should be_nil
       end
     end
-    
+
     context "#find (with multiple ids)" do
       should "add all documents to map" do
         person1 = @person_class.create(:name => 'Fred')
@@ -204,7 +237,7 @@ class IdentityMapTest < Test::Unit::TestCase
         @person_class.identity_map.clear
 
         people = @person_class.find(person1.id, person2.id, person3.id)
-        people.each { |person| assert_in_map(person) }
+        assert_in_map(people)
       end
 
       should "add missing documents to map and return existing ones" do
@@ -214,16 +247,14 @@ class IdentityMapTest < Test::Unit::TestCase
         person3 = @person_class.create(:name => 'Jesse')
 
         assert_not_in_map(person1)
-        assert_in_map(person2)
-        assert_in_map(person3)
+        assert_in_map(person2, person3)
 
         people = @person_class.find(person1.id, person2.id, person3.id)
         assert_in_map(people.first) # making sure one that wasn't mapped now is
-        assert_in_map(person2)
-        assert_in_map(person3)
+        assert_in_map(person2, person3)
       end
     end
-    
+
     context "#first" do
       context "for object not in map" do
         setup do
@@ -256,15 +287,15 @@ class IdentityMapTest < Test::Unit::TestCase
           expect_no_queries
           @person_class.first(:_id => @person.id)
         end
-        
+
         should "return exact object" do
           assert_in_map(@person)
           found_person = @person_class.first(:_id => @person.id)
-          found_person.object_id.should == @person.object_id
+          found_person.should equal(@person)
         end
       end
     end
-    
+
     context "#all" do
       should "add all documents to map" do
         person1 = @person_class.create(:name => 'Fred')
@@ -273,7 +304,7 @@ class IdentityMapTest < Test::Unit::TestCase
         @person_class.identity_map.clear
 
         people = @person_class.all(:_id => [person1.id, person2.id, person3.id])
-        people.each { |person| assert_in_map(person) }
+        assert_in_map(people)
       end
 
       should "add missing documents to map and return existing ones" do
@@ -283,13 +314,11 @@ class IdentityMapTest < Test::Unit::TestCase
         person3 = @person_class.create(:name => 'Jesse')
 
         assert_not_in_map(person1)
-        assert_in_map(person2)
-        assert_in_map(person3)
+        assert_in_map(person2, person3)
 
         people = @person_class.all(:_id => [person1.id, person2.id, person3.id])
-        assert_in_map(people.first) # making sure one that wasn't mapped now is
-        assert_in_map(person2)
-        assert_in_map(person3)
+        # people.first is making sure one that wasn't mapped now is
+        assert_in_map(people.first, person2, person3)
       end
     end
     
@@ -303,7 +332,7 @@ class IdentityMapTest < Test::Unit::TestCase
         @person_class.find_by_id(1234).should be_nil
       end
     end
-    
+
     context "querying and selecting certain fields" do
       setup do
         @person = @person_class.create(:name => 'Bill')
@@ -324,8 +353,8 @@ class IdentityMapTest < Test::Unit::TestCase
         @person_class.find(1234, :select => 'name').should be_nil
       end
     end
-    
-    context "single collection inheritance" do
+
+    context "single collection inherited models" do
       setup do
         class ::Item
           include MongoMapper::Document
@@ -336,13 +365,12 @@ class IdentityMapTest < Test::Unit::TestCase
           key :parent_id, ObjectId
           
           belongs_to :parent, :class_name => 'Item'
-          one :child, :class_name => 'Blog'
+          one :blog, :class_name => 'Blog', :foreign_key => 'parent_id'
         end
         Item.collection.remove
-        Item.identity_map.clear
 
         class ::Blog < ::Item; end
-        
+
         class ::BlogPost < ::Item
           key :blog_id, ObjectId
           belongs_to :blog
@@ -355,11 +383,10 @@ class IdentityMapTest < Test::Unit::TestCase
         Object.send :remove_const, 'BlogPost' if defined?(::BlogPost)
       end
 
-      should "share the same identity map 4eva" do
+      should "share the same identity map" do
         blog = Blog.create(:title => 'Jill')
         assert_in_map(blog)
-        Item.identity_map_key(blog).should == Blog.identity_map_key(blog)
-        Item.identity_map.object_id.should == Blog.identity_map.object_id
+        Item.identity_map.should equal(Blog.identity_map)
       end
       
       should "not query when finding by _id and _type" do
@@ -369,8 +396,7 @@ class IdentityMapTest < Test::Unit::TestCase
         
         blog = Item.find(blog.id)
         post = Item.find(post.id)
-        assert_in_map(blog)
-        assert_in_map(post)
+        assert_in_map(blog, post)
         
         expect_no_queries
         post.blog
@@ -379,7 +405,7 @@ class IdentityMapTest < Test::Unit::TestCase
       
       should "load from map when using parent collection inherited class" do
         blog = Blog.create(:title => 'Jill')
-        Item.find(blog.id).object_id.should == blog.object_id
+        Item.find(blog.id).should equal(blog)
       end
       
       should "work correctly with belongs to proxy" do
@@ -388,17 +414,94 @@ class IdentityMapTest < Test::Unit::TestCase
         
         blog = Blog.create(:title => 'Jill', :parent => root)
         assert_in_map(blog)
-        root.object_id.should == blog.parent.object_id
+        root.should equal(blog.parent)
       end
       
       should "work correctly with one proxy" do
         blog = Blog.create(:title => 'Jill')
         assert_in_map(blog)
 
-        root = Item.create(:title => 'Root', :child => blog)
+        root = Item.create(:title => 'Root', :blog => blog)
         assert_in_map(root)
+        root.blog.should equal(blog)
+      end
+      
+      should "work correctly with one proxy create" do
+        root = Item.create(:title => 'Root')
+        blog = root.blog.create(:title => 'Blog')
+        blog.parent.should equal(root)
+      end
+    end
+
+    context "without identity map" do
+      should "not add to map on save" do
+        @post_class.without_identity_map do
+          post = @post_class.create(:title => 'Bill')
+          assert_not_in_map(post)
+        end
+      end
+      
+      should "not remove from map on delete" do
+        post = @post_class.create(:title => 'Bill')
+        assert_in_map(post)
         
-        root.child.object_id.should == blog.object_id
+        @post_class.without_identity_map do
+          post.destroy
+        end
+        
+        assert_in_map(post)
+      end
+      
+      should "not add to map when loading" do
+        @post_class.without_identity_map do
+          post = @post_class.load({'_id' => Mongo::ObjectID.new, 'title' => 'Awesome!'})
+          assert_not_in_map(post)
+        end
+      end
+      
+      should "not load from map when loading" do
+        post = @post_class.create(:title => 'Awesome!')
+        
+        @post_class.without_identity_map do
+          loaded = @post_class.load('_id' => post._id, 'title' => 'Awesome!')
+          loaded.should_not equal(post)
+        end
+      end
+      
+      context "all" do
+        should "not add to map" do
+          @post_class.without_identity_map do
+            post1 = @post_class.create(:title => 'Foo')
+            post2 = @post_class.create(:title => 'Bar')
+            @post_class.identity_map.clear
+            
+            assert_not_in_map(@post_class.all)
+          end
+        end
+      end
+      
+      context "first" do
+        should "not add to map" do
+          @post_class.without_identity_map do
+            post1 = @post_class.create(:title => 'Foo')
+            post2 = @post_class.create(:title => 'Bar')
+            @post_class.identity_map.clear
+            
+            assert_not_in_map(@post_class.first)
+          end
+        end
+      end
+      
+      context "last" do
+        should "not add to map" do
+          @post_class.without_identity_map do
+            post1 = @post_class.create(:title => 'Foo')
+            post2 = @post_class.create(:title => 'Bar')
+            @post_class.identity_map.clear
+            
+            assert_not_in_map(@post_class.last(:order => 'title'))
+          end
+        end
       end
     end
   end

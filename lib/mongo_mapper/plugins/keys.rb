@@ -1,6 +1,10 @@
 module MongoMapper
   module Plugins
     module Keys
+      def self.configure(model)
+        model.key :_id, ObjectId
+      end
+
       module ClassMethods
         def inherited(descendant)
           descendant.instance_variable_set(:@keys, keys.dup)
@@ -118,6 +122,14 @@ module MongoMapper
               validates_format_of(attribute, :with => key.options[:format])
             end
 
+            if key.options[:in]
+              validates_inclusion_of(attribute, :within => key.options[:in])
+            end
+
+            if key.options[:not_in]
+              validates_exclusion_of(attribute, :within => key.options[:not_in])
+            end
+
             if key.options[:length]
               length_options = case key.options[:length]
               when Integer
@@ -131,36 +143,41 @@ module MongoMapper
             end
           end
       end
-      
+
       module InstanceMethods
-        def self.included(model)
-          model.key :_id, ObjectId
-        end
-        
-        def initialize(attrs={}, from_db=false)
+        def initialize(attrs={}, from_database=false)
           unless attrs.nil?
             provided_keys = attrs.keys.map { |k| k.to_s }
             unless provided_keys.include?('_id') || provided_keys.include?('id')
               write_key :_id, Mongo::ObjectID.new
             end
           end
-          
-          @new = from_db ? false : true
-          self._type = self.class.name if respond_to?(:_type=)
-          self.attributes = attrs
+
+          assign_type_if_present
+
+          if from_database
+            @new = false
+            self.attributes = attrs
+          else
+            @new = true
+            assign(attrs)
+          end
         end
-        
+
         def new?
           @new
         end
-        
+
         def attributes=(attrs)
           return if attrs.blank?
-          
+
           attrs.each_pair do |name, value|
             writer_method = "#{name}="
 
             if respond_to?(writer_method)
+              if writer_method == '_root_document='
+                puts "_root_document= #{value.inspect}"
+              end
               self.send(writer_method, value)
             else
               self[name.to_s] = value
@@ -185,11 +202,25 @@ module MongoMapper
           attrs
         end
         alias :to_mongo :attributes
-        
+
+        def assign(attrs={})
+          self.attributes = attrs
+        end
+
+        def update_attributes(attrs={})
+          assign(attrs)
+          save
+        end
+
+        def update_attributes!(attrs={})
+          assign(attrs)
+          save!
+        end
+
         def id
           _id
         end
-        
+
         def id=(value)
           if self.class.using_object_id?
             value = MongoMapper.normalize_object_id(value)
@@ -228,6 +259,10 @@ module MongoMapper
         end
 
         private
+          def assign_type_if_present
+            self._type = self.class.name if respond_to?(:_type=)
+          end
+
           def ensure_key_exists(name)
             self.class.key(name) unless respond_to?("#{name}=")
           end
@@ -248,11 +283,16 @@ module MongoMapper
 
           def write_key(name, value)
             key = keys[name]
+
+            if key.embeddable? && value.is_a?(key.type)
+              value._parent_document = self
+            end
+
             instance_variable_set "@#{name}_before_typecast", value
             instance_variable_set "@#{name}", key.set(value)
           end
       end
-      
+
       class Key
         attr_accessor :name, :type, :options, :default_value
 
@@ -277,7 +317,11 @@ module MongoMapper
 
         def get(value)
           if value.nil? && !default_value.nil?
-            return default_value
+            if default_value.respond_to?(:call)
+              return default_value.call
+            else
+              return default_value
+            end
           end
 
           type.from_mongo(value)

@@ -2,7 +2,7 @@ module MongoMapper
   module Plugins
     module Associations
       class ManyDocumentsProxy < Collection
-        include ::MongoMapper::Finders
+        include Support::Find
 
         def find(*args)
           options = args.extract_options!
@@ -52,18 +52,21 @@ module MongoMapper
         def build(attrs={})
           doc = klass.new(attrs)
           apply_scope(doc)
+          reset
           doc
         end
 
         def create(attrs={})
           doc = klass.new(attrs)
           apply_scope(doc).save
+          reset
           doc
         end
 
         def create!(attrs={})
           doc = klass.new(attrs)
           apply_scope(doc).save!
+          reset
           doc
         end
 
@@ -78,7 +81,7 @@ module MongoMapper
         end
 
         def nullify
-          criteria = FinderOptions.new(klass, scoped_conditions).criteria
+          criteria = Query.new(klass, scoped_conditions).criteria
           all(criteria).each do |doc|
             doc.update_attributes(self.foreign_key => nil)
           end
@@ -91,7 +94,7 @@ module MongoMapper
           end
 
           def scoped_options(options)
-            reflection.finder_options.merge(options).merge(scoped_conditions)
+            association.query_options.merge(options).merge(scoped_conditions)
           end
 
           def find_target
@@ -109,7 +112,7 @@ module MongoMapper
           end
 
           def foreign_key
-            options[:foreign_key] || owner.class.name.underscore.gsub("/", "_") + "_id"
+            options[:foreign_key] || owner.class.name.to_s.underscore.gsub("/", "_") + "_id"
           end
       end
     end

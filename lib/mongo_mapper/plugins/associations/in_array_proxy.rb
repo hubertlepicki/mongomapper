@@ -2,7 +2,7 @@ module MongoMapper
   module Plugins
     module Associations
       class InArrayProxy < Collection
-        include ::MongoMapper::Finders
+        include Support::Find
 
         def find(*args)
           options = args.extract_options!
@@ -79,6 +79,7 @@ module MongoMapper
           unless doc.new?
             ids << doc.id
             owner.save
+            reset
           end
           doc
         end
@@ -88,6 +89,7 @@ module MongoMapper
           unless doc.new?
             ids << doc.id
             owner.save
+            reset
           end
           doc
         end
@@ -119,11 +121,14 @@ module MongoMapper
           end
 
           def scoped_options(options)
-            reflection.finder_options.merge(options).merge(scoped_conditions)
+            association.query_options.merge(options).merge(scoped_conditions)
           end
 
           def scoped_ids(args)
-            args.flatten.reject { |id| !ids.include?(id) }
+            args.flatten.select do |id|
+              id = ObjectId.to_mongo(id) if klass.using_object_id?
+              ids.include?(id)
+            end
           end
 
           def find_target
