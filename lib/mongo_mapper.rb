@@ -7,7 +7,7 @@ require 'uri'
 # if there is a better way to do this, please enlighten me!
 if self.class.const_defined?(:Gem)
   gem 'activesupport', '>= 2.3'
-  gem 'mongo', '0.19.1'
+  gem 'mongo', '0.19.2-hl'
   gem 'jnunemaker-validatable', '1.8.3'
 end
 
